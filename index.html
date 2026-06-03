@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Senior Labelers Tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- ═══ LOGIN SCREEN ═══ -->
+    <section id="loginScreen" class="screen active" aria-label="Login">
+        <div class="login-bg">
+            <div class="bg-orb bg-orb-1"></div>
+            <div class="bg-orb bg-orb-2"></div>
+            <div class="bg-orb bg-orb-3"></div>
+        </div>
+        <div class="login-card">
+            <div class="login-icon">
+                <span class="material-symbols-outlined">label</span>
+            </div>
+            <h1 class="login-title">Senior Labelers Tracker</h1>
+            <p class="login-subtitle">Sign in to view your productivity dashboard</p>
+            <form id="loginForm" autocomplete="off">
+                <div class="input-group">
+                    <label for="loginName">Full Name</label>
+                    <div class="input-wrapper">
+                        <span class="material-symbols-outlined input-icon">person</span>
+                        <input type="text" id="loginName" placeholder="e.g. Mostafa Fayez" required aria-required="true">
+                    </div>
+                </div>
+                <div class="input-group">
+                    <label for="loginPass">Password</label>
+                    <div class="input-wrapper">
+                        <span class="material-symbols-outlined input-icon">lock</span>
+                        <input type="password" id="loginPass" placeholder="Enter your password" required aria-required="true">
+                        <button type="button" class="toggle-pass" aria-label="Toggle password visibility">
+                            <span class="material-symbols-outlined">visibility_off</span>
+                        </button>
+                    </div>
+                </div>
+                <div id="loginError" class="error-msg" role="alert" aria-live="assertive"></div>
+                <button type="submit" class="btn-primary" id="loginBtn">
+                    <span class="btn-text">Sign In</span>
+                    <span class="btn-loader" hidden></span>
+                </button>
+            </form>
+            <p class="login-footer">Version 1.0.0 &middot; Powered by METI</p>
+        </div>
+    </section>
+
+    <!-- ═══ DASHBOARD SCREEN ═══ -->
+    <section id="dashboardScreen" class="screen" aria-label="Dashboard">
+
+        <!-- Top Bar -->
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <span class="material-symbols-outlined top-bar-icon">label</span>
+                <span class="top-bar-title">Senior Labelers Tracker</span>
+            </div>
+            <div class="top-bar-center">
+                <span id="userGreeting" class="user-greeting"></span>
+            </div>
+            <div class="top-bar-right">
+                <div class="date-picker-wrapper">
+                    <span class="material-symbols-outlined date-icon">calendar_today</span>
+                    <select id="datePicker" class="date-picker" aria-label="Select date">
+                        <option value="">Loading...</option>
+                    </select>
+                </div>
+                <button id="logoutBtn" class="btn-ghost" aria-label="Log out">
+                    <span class="material-symbols-outlined">logout</span>
+                    <span class="btn-label">Sign Out</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="dashboard-main">
+
+            <!-- Summary Cards -->
+            <div class="summary-cards" id="summaryCards">
+                <div class="summary-card" style="--card-accent: var(--md-sys-color-primary)">
+                    <div class="card-icon-wrap">
+                        <span class="material-symbols-outlined">bar_chart</span>
+                    </div>
+                    <div class="card-content">
+                        <span class="card-value" id="cardTotal">0</span>
+                        <span class="card-label">Total Submissions</span>
+                    </div>
+                </div>
+                <div class="summary-card" style="--card-accent: var(--color-support)">
+                    <div class="card-icon-wrap">
+                        <span class="material-symbols-outlined">handshake</span>
+                    </div>
+                    <div class="card-content">
+                        <span class="card-value" id="cardSupport">0</span>
+                        <span class="card-label">Support Tasks</span>
+                    </div>
+                </div>
+                <div class="summary-card" style="--card-accent: var(--md-sys-color-secondary)">
+                    <div class="card-icon-wrap">
+                        <span class="material-symbols-outlined">person</span>
+                    </div>
+                    <div class="card-content">
+                        <span class="card-value" id="cardOwn">0</span>
+                        <span class="card-label">Own Tasks</span>
+                    </div>
+                </div>
+                <div class="summary-card" style="--card-accent: var(--color-objects)">
+                    <div class="card-icon-wrap">
+                        <span class="material-symbols-outlined">my_location</span>
+                    </div>
+                    <div class="card-content">
+                        <span class="card-value" id="cardObjects">0</span>
+                        <span class="card-label">Objects Annotated</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panels Grid -->
+            <div class="panels-grid">
+                <div class="panel" id="supportPanel">
+                    <div class="panel-header">
+                        <span class="material-symbols-outlined panel-icon" style="color: var(--color-support)">handshake</span>
+                        <h2 class="panel-title">Support Activity</h2>
+                    </div>
+                    <div class="panel-body" id="supportBody"></div>
+                </div>
+                <div class="panel" id="ownPanel">
+                    <div class="panel-header">
+                        <span class="material-symbols-outlined panel-icon" style="color: var(--md-sys-color-secondary)">person</span>
+                        <h2 class="panel-title">Own Tasks</h2>
+                    </div>
+                    <div class="panel-body" id="ownBody"></div>
+                </div>
+            </div>
+
+            <!-- Detailed Task Table -->
+            <div class="table-section" id="tableSection">
+                <div class="table-header-bar">
+                    <div class="table-header-left">
+                        <span class="material-symbols-outlined panel-icon">list_alt</span>
+                        <h2 class="panel-title">Detailed Task List</h2>
+                        <span class="task-count-badge" id="taskCountBadge">0</span>
+                    </div>
+                    <div class="table-filters">
+                        <div class="filter-group">
+                            <label for="filterModality">Modality</label>
+                            <select id="filterModality" class="filter-select">
+                                <option value="all">All</option>
+                                <option value="Lane Line">Lane Line</option>
+                                <option value="LIDAR">LIDAR</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="filterPass">Pass Type</label>
+                            <select id="filterPass" class="filter-select">
+                                <option value="all">All</option>
+                                <option value="FP">First Pass</option>
+                                <option value="QA">Quality Check</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="filterMode">Task Mode</label>
+                            <select id="filterMode" class="filter-select">
+                                <option value="all">All</option>
+                                <option value="SUPPORT">Support</option>
+                                <option value="OWN">Own</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table class="task-table" id="taskTable">
+                        <thead>
+                            <tr>
+                                <th class="th-num">#</th>
+                                <th class="th-time sortable" data-sort="timestamp">Time <span class="sort-arrow desc"></span></th>
+                                <th class="th-mode">Mode</th>
+                                <th class="th-modality sortable" data-sort="modality">Modality <span class="sort-arrow"></span></th>
+                                <th class="th-queue">Queue Name</th>
+                                <th class="th-pass sortable" data-sort="pass">Pass <span class="sort-arrow"></span></th>
+                                <th class="th-objects sortable" data-sort="objects">Objects <span class="sort-arrow"></span></th>
+                                <th class="th-link">Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="taskTableBody"></tbody>
+                    </table>
+                </div>
+                <div class="table-empty" id="tableEmpty" hidden>
+                    <span class="material-symbols-outlined empty-icon">search_off</span>
+                    <p>No tasks match the current filters</p>
+                </div>
+            </div>
+
+        </main>
+
+        <footer class="dashboard-footer">
+            <span>Senior Labelers Tracker v1.0.0</span>
+            <span id="lastSync">Last sync: —</span>
+        </footer>
+    </section>
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay" hidden>
+        <div class="spinner"></div>
+        <p>Loading data...</p>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
