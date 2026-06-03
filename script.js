@@ -1,34 +1,37 @@
 /* ═══════════════════════════════════════════
    Senior Labelers Tracker — Frontend Logic
+   (Fixed: loading stuck issue)
    ═══════════════════════════════════════════ */
 
 // ── Configuration ─────────────────────────
-const CONFIG = {
-  // ⚠️ REPLACE with your actual Apps Script Web App URL after deployment
+var CONFIG = {
   SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbywm07hSM381bmMQcHjVZtSpkooN5tiMIHBcOqmoJ6yyLyqRLgPlZQTr_EdPA3WHEQDYg/exec',
-  APP_NAME:   'Senior Labelers Tracker',
-  VERSION:    '1.0.0',
-  CACHE_TTL:  60 * 1000,          // 1 minute client cache
+  APP_NAME: 'Senior Labelers Tracker',
+  VERSION: '1.0.0',
+  CACHE_TTL: 60 * 1000,
   MAX_LOGIN_ATTEMPTS: 5,
-  LOCKOUT_DURATION: 30 * 1000,    // 30 seconds
+  LOCKOUT_DURATION: 30 * 1000,
+  FETCH_TIMEOUT: 10000,
+  LOADING_SAFETY_TIMEOUT: 12000,
 };
 
-// ── Application State ─────────────────────
-const STATE = {
-  user: null,           // { fullName, loginName }
-  dates: [],            // available date strings for user
-  currentDate: '',      // selected YYYY-MM-DD
-  allTasks: [],         // raw tasks from server for selected date
-  filteredTasks: [],    // after client-side filter
+// ── State ─────────────────────────────────
+var STATE = {
+  user: null,
+  dates: [],
+  currentDate: '',
+  allTasks: [],
+  filteredTasks: [],
   sortConfig: { key: 'timestamp', dir: 'desc' },
   loginAttempts: 0,
   lockoutUntil: 0,
+  _loadingSafetyTimer: null,
 };
 
-// ── Cached DOM References ─────────────────
-const DOM = {};
+// ── DOM Cache ─────────────────────────────
+var DOM = {};
 function cacheDom() {
-  const ids = [
+  var ids = [
     'loginScreen','dashboardScreen','loginForm','loginName','loginPass',
     'loginError','loginBtn','logoutBtn','userGreeting','datePicker',
     'cardTotal','cardSupport','cardOwn','cardObjects',
@@ -36,42 +39,70 @@ function cacheDom() {
     'tableEmpty','filterModality','filterPass','filterMode',
     'loadingOverlay','toastContainer','lastSync',
   ];
-  ids.forEach(id => DOM[id] = document.getElementById(id));
+  ids.forEach(function(id) { DOM[id] = document.getElementById(id); });
   DOM.tableWrapper = document.querySelector('.table-wrapper');
 }
 
-// ── Utilities ─────────────────────────────
+// ── Safe Loading (with auto-dismiss) ──────
+function setLoading(show) {
+  // Clear any existing safety timer
+  if (STATE._loadingSafetyTimer) {
+    clearTimeout(STATE._loadingSafetyTimer);
+    STATE._loadingSafetyTimer = null;
+  }
 
-/** Fetch from Apps Script Web App */
-async function fetchAPI(params) {
-  const url = new URL(CONFIG.SCRIPT_URL);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  DOM.loadingOverlay.hidden = !show;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
-
-  try {
-    const res = await fetch(url.toString(), { signal: controller.signal, redirect: 'follow' });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const text = await res.text();
-    try { return JSON.parse(text); }
-    catch { throw new Error('Invalid server response'); }
-  } catch (err) {
-    clearTimeout(timer);
-    if (err.name === 'AbortError') throw new Error('Request timed out');
-    throw err;
+  // Auto-dismiss safety net: force close after LOADING_SAFETY_TIMEOUT
+  if (show) {
+    STATE._loadingSafetyTimer = setTimeout(function() {
+      if (!DOM.loadingOverlay.hidden) {
+        console.warn('[SLT] Loading safety timeout triggered — forcing hide');
+        DOM.loadingOverlay.hidden = true;
+        STATE._loadingSafetyTimer = null;
+      }
+    }, CONFIG.LOADING_SAFETY_TIMEOUT);
   }
 }
 
-/** Toast notification */
+// ── Utilities ─────────────────────────────
+function fetchAPI(params) {
+  var urlStr = CONFIG.SCRIPT_URL;
+  // Build URL manually to avoid issues with URL constructor
+  var sep = urlStr.indexOf('?') === -1 ? '?' : '&';
+  var queryParts = [];
+  Object.keys(params).forEach(function(k) {
+    queryParts.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+  });
+  var fullUrl = urlStr + sep + queryParts.join('&');
+
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, CONFIG.FETCH_TIMEOUT);
+
+  return fetch(fullUrl, {
+    signal: controller.signal,
+    redirect: 'follow',
+  }).then(function(res) {
+    clearTimeout(timer);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.text();
+  }).then(function(text) {
+    try { return JSON.parse(text); }
+    catch (e) { throw new Error('Invalid server response'); }
+  }).catch(function(err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') throw new Error('Request timed out');
+    throw err;
+  });
+}
+
 function showToast(message, type, duration) {
   type = type || 'info';
   duration = duration || 4000;
-  const icons = { error: 'error', success: 'check_circle', warning: 'warning', info: 'info' };
-  const el = document.createElement('div');
+  var icons = { error: 'error', success: 'check_circle', warning: 'warning', info: 'info' };
+  var el = document.createElement('div');
   el.className = 'toast toast-' + type;
-  el.innerHTML = '<span class="material-symbols-outlined">' + icons[type] + '</span><span>' + message + '</span>';
+  el.innerHTML = '<span class="material-symbols-outlined">' + (icons[type] || 'info') + '</span><span>' + message + '</span>';
   DOM.toastContainer.appendChild(el);
   setTimeout(function() {
     el.classList.add('toast-out');
@@ -79,10 +110,8 @@ function showToast(message, type, duration) {
   }, duration);
 }
 
-function setLoading(show) { DOM.loadingOverlay.hidden = !show; }
-
-/** Count-up animation */
 function animateCount(el, target, dur) {
+  if (!el) return;
   dur = dur || 800;
   var start = performance.now();
   function tick(now) {
@@ -94,31 +123,29 @@ function animateCount(el, target, dur) {
   requestAnimationFrame(tick);
 }
 
-/** Extract HH:MM AM/PM from full timestamp */
 function formatTime(ts) {
-  if (!ts) return '—';
-  var m = ts.match(/(\d{1,2}:\d{2}):\d{2}\s*(AM|PM)/i);
-  return m ? (m[1] + ' ' + m[2]) : ts;
+  if (!ts) return '\u2014';
+  var m = String(ts).match(/(\d{1,2}:\d{2}):\d{2}\s*(AM|PM)/i);
+  return m ? (m[1] + ' ' + m[2]) : String(ts);
 }
 
 function debounce(fn, ms) {
-  var t; return function() { clearTimeout(t); t = setTimeout(fn, ms); };
+  var t; return function() { var a = arguments; var self = this; clearTimeout(t); t = setTimeout(function() { fn.apply(self, a); }, ms); };
 }
 
 function escapeHtml(s) {
   if (!s) return '';
   var d = document.createElement('div');
-  d.textContent = s;
+  d.textContent = String(s);
   return d.innerHTML;
 }
 
 // ── Authentication ────────────────────────
 
-async function handleLogin(e) {
+function handleLogin(e) {
   e.preventDefault();
   var now = Date.now();
 
-  // Lockout check
   if (STATE.lockoutUntil > now) {
     var sec = Math.ceil((STATE.lockoutUntil - now) / 1000);
     DOM.loginError.textContent = 'Too many attempts. Try again in ' + sec + 's.';
@@ -127,38 +154,45 @@ async function handleLogin(e) {
 
   var name = DOM.loginName.value.trim();
   var pass = DOM.loginPass.value;
-  if (!name || !pass) { DOM.loginError.textContent = 'Please enter both name and password.'; return; }
+  if (!name || !pass) {
+    DOM.loginError.textContent = 'Please enter both name and password.';
+    return;
+  }
 
-  // Loading state
+  // Button loading state (NOT the overlay)
   DOM.loginBtn.disabled = true;
   DOM.loginBtn.querySelector('.btn-text').hidden = true;
   DOM.loginBtn.querySelector('.btn-loader').hidden = false;
   DOM.loginError.textContent = '';
 
-  try {
-    var res = await fetchAPI({ action: 'auth', name: name, pass: pass });
-    if (res.success) {
-      STATE.user = { fullName: res.fullName, loginName: name };
-      sessionStorage.setItem('slt_user', JSON.stringify(STATE.user));
-      showToast('Welcome, ' + res.fullName, 'success');
-      showDashboard();
-    } else {
-      STATE.loginAttempts++;
-      DOM.loginError.textContent = res.message || 'Invalid credentials.';
-      if (STATE.loginAttempts >= CONFIG.MAX_LOGIN_ATTEMPTS) {
-        STATE.lockoutUntil = Date.now() + CONFIG.LOCKOUT_DURATION;
-        STATE.loginAttempts = 0;
-        showToast('Locked for 30 seconds — too many failed attempts.', 'warning');
+  fetchAPI({ action: 'auth', name: name, pass: pass })
+    .then(function(res) {
+      if (res.success) {
+        STATE.user = { fullName: res.fullName, loginName: name };
+        sessionStorage.setItem('slt_user', JSON.stringify(STATE.user));
+        showToast('Welcome, ' + res.fullName, 'success');
+        // Use setTimeout to let the DOM paint the button state change first
+        setTimeout(function() { showDashboard(); }, 80);
+      } else {
+        STATE.loginAttempts++;
+        DOM.loginError.textContent = res.message || 'Invalid credentials.';
+        if (STATE.loginAttempts >= CONFIG.MAX_LOGIN_ATTEMPTS) {
+          STATE.lockoutUntil = Date.now() + CONFIG.LOCKOUT_DURATION;
+          STATE.loginAttempts = 0;
+          showToast('Locked for 30 seconds.', 'warning');
+        }
       }
-    }
-  } catch (err) {
-    DOM.loginError.textContent = 'Connection error. Please check your network.';
-    showToast('Failed to connect to server', 'error');
-  } finally {
-    DOM.loginBtn.disabled = false;
-    DOM.loginBtn.querySelector('.btn-text').hidden = false;
-    DOM.loginBtn.querySelector('.btn-loader').hidden = true;
-  }
+    })
+    .catch(function(err) {
+      console.error('[SLT] Auth error:', err);
+      DOM.loginError.textContent = 'Connection error. Check your network and ensure the server is deployed.';
+      showToast('Cannot reach server', 'error');
+    })
+    .finally(function() {
+      DOM.loginBtn.disabled = false;
+      DOM.loginBtn.querySelector('.btn-text').hidden = false;
+      DOM.loginBtn.querySelector('.btn-loader').hidden = true;
+    });
 }
 
 function handleLogout() {
@@ -166,8 +200,8 @@ function handleLogout() {
   STATE.dates = [];
   STATE.allTasks = [];
   STATE.filteredTasks = [];
+  setLoading(false); // Ensure overlay is off
   sessionStorage.removeItem('slt_user');
-  // Clear data cache
   Object.keys(sessionStorage).forEach(function(k) {
     if (k.indexOf('slt_data_') === 0) sessionStorage.removeItem(k);
   });
@@ -181,39 +215,49 @@ function handleLogout() {
 function checkSession() {
   try {
     var stored = sessionStorage.getItem('slt_user');
-    if (stored) { STATE.user = JSON.parse(stored); showDashboard(); }
+    if (stored) {
+      STATE.user = JSON.parse(stored);
+      showDashboard();
+    }
   } catch (e) { sessionStorage.removeItem('slt_user'); }
 }
 
 // ── Dashboard ─────────────────────────────
 
-async function showDashboard() {
+function showDashboard() {
   DOM.loginScreen.classList.remove('active');
   DOM.dashboardScreen.classList.add('active');
-  DOM.userGreeting.innerHTML = 'Signed in as <strong>' + escapeHtml(STATE.user.fullName) + '</strong>';
+  if (STATE.user) {
+    DOM.userGreeting.innerHTML = 'Signed in as <strong>' + escapeHtml(STATE.user.fullName) + '</strong>';
+  }
   STATE.loginAttempts = 0;
   STATE.lockoutUntil = 0;
-  await loadAvailableDates();
+  loadAvailableDates();
 }
 
-async function loadAvailableDates() {
-  try {
-    var res = await fetchAPI({ action: 'availableDates', name: STATE.user.loginName });
-    if (res.dates && res.dates.length > 0) {
-      STATE.dates = res.dates;
-      populateDatePicker();
-      STATE.currentDate = STATE.dates[0];
-      DOM.datePicker.value = STATE.currentDate;
-      await loadDayData(STATE.currentDate);
-    } else {
+function loadAvailableDates() {
+  fetchAPI({ action: 'availableDates', name: STATE.user.loginName })
+    .then(function(res) {
+      if (res.dates && res.dates.length > 0) {
+        STATE.dates = res.dates;
+        populateDatePicker();
+        STATE.currentDate = STATE.dates[0];
+        DOM.datePicker.value = STATE.currentDate;
+        loadDayData(STATE.currentDate);
+      } else {
+        STATE.dates = [];
+        DOM.datePicker.innerHTML = '<option value="">No data available</option>';
+        renderEmptyDashboard();
+        showToast('No task data found for your account.', 'info');
+      }
+    })
+    .catch(function(err) {
+      console.error('[SLT] loadAvailableDates error:', err);
       STATE.dates = [];
-      DOM.datePicker.innerHTML = '<option value="">No data available</option>';
+      DOM.datePicker.innerHTML = '<option value="">Error loading dates</option>';
       renderEmptyDashboard();
-      showToast('No task data found for your account.', 'info');
-    }
-  } catch (err) {
-    showToast('Failed to load available dates', 'error');
-  }
+      showToast('Failed to load dates from server', 'error');
+    });
 }
 
 function populateDatePicker() {
@@ -229,85 +273,106 @@ function populateDatePicker() {
   });
 }
 
-async function loadDayData(date) {
-  // Session cache check
+function loadDayData(date) {
+  // Check session cache first (no loading needed)
   var ck = 'slt_data_' + date;
   var ct = 'slt_data_' + date + '_t';
-  var cached = sessionStorage.getItem(ck);
-  var cacheTime = sessionStorage.getItem(ct);
-  if (cached && cacheTime && (Date.now() - parseInt(cacheTime)) < CONFIG.CACHE_TTL) {
-    try { STATE.allTasks = JSON.parse(cached); renderDashboard(); return; }
-    catch (e) { /* ignore */ }
-  }
-
-  setLoading(true);
   try {
-    var res = await fetchAPI({ action: 'userData', name: STATE.user.loginName, date: date });
-    if (res.error) {
-      showToast(res.error, 'error');
-      STATE.allTasks = [];
-    } else {
-      var support = res.supportTasks || [];
-      var own = res.ownTasks || [];
-      STATE.allTasks = support.concat(own);
-      sessionStorage.setItem(ck, JSON.stringify(STATE.allTasks));
-      sessionStorage.setItem(ct, String(Date.now()));
+    var cached = sessionStorage.getItem(ck);
+    var cacheTime = sessionStorage.getItem(ct);
+    if (cached && cacheTime && (Date.now() - parseInt(cacheTime)) < CONFIG.CACHE_TTL) {
+      STATE.allTasks = JSON.parse(cached);
+      renderDashboard();
+      return; // Skip loading entirely
     }
-    renderDashboard();
-  } catch (err) {
-    showToast('Failed to load task data', 'error');
-    STATE.allTasks = [];
-    renderEmptyDashboard();
-  } finally { setLoading(false); }
+  } catch (e) { /* ignore cache error */ }
+
+  // Show loading only for network requests
+  setLoading(true);
+
+  fetchAPI({ action: 'userData', name: STATE.user.loginName, date: date })
+    .then(function(res) {
+      if (res.error) {
+        showToast(res.error, 'error');
+        STATE.allTasks = [];
+      } else {
+        var support = (res.supportTasks || []);
+        var own = (res.ownTasks || []);
+        STATE.allTasks = support.concat(own);
+        try {
+          sessionStorage.setItem(ck, JSON.stringify(STATE.allTasks));
+          sessionStorage.setItem(ct, String(Date.now()));
+        } catch (e) { /* storage full */ }
+      }
+      renderDashboard();
+    })
+    .catch(function(err) {
+      console.error('[SLT] loadDayData error:', err);
+      showToast('Failed to load task data', 'error');
+      STATE.allTasks = [];
+      renderEmptyDashboard();
+    })
+    .finally(function() {
+      setLoading(false);
+    });
 }
 
 function renderDashboard() {
-  var tasks = STATE.allTasks;
-  var supportTasks = tasks.filter(function(t) { return t.mode === 'SUPPORT'; });
-  var ownTasks = tasks.filter(function(t) { return t.mode === 'OWN'; });
-  var totalObj = tasks.reduce(function(s, t) { return s + (parseInt(t.objects) || 0); }, 0);
+  try {
+    var tasks = STATE.allTasks;
+    var supportTasks = tasks.filter(function(t) { return t.mode === 'SUPPORT'; });
+    var ownTasks = tasks.filter(function(t) { return t.mode === 'OWN'; });
+    var totalObj = tasks.reduce(function(s, t) { return s + (parseInt(t.objects) || 0); }, 0);
 
-  animateCount(DOM.cardTotal, tasks.length);
-  animateCount(DOM.cardSupport, supportTasks.length);
-  animateCount(DOM.cardOwn, ownTasks.length);
-  animateCount(DOM.cardObjects, totalObj);
+    animateCount(DOM.cardTotal, tasks.length);
+    animateCount(DOM.cardSupport, supportTasks.length);
+    animateCount(DOM.cardOwn, ownTasks.length);
+    animateCount(DOM.cardObjects, totalObj);
 
-  renderSupportPanel(supportTasks);
-  renderOwnPanel(ownTasks, totalObj);
+    renderSupportPanel(supportTasks);
+    renderOwnPanel(ownTasks, totalObj);
 
-  STATE.filteredTasks = tasks.slice();
-  applyFiltersAndRender();
-  DOM.lastSync.textContent = 'Last sync: ' + new Date().toLocaleTimeString();
+    STATE.filteredTasks = tasks.slice();
+    applyFiltersAndRender();
+    DOM.lastSync.textContent = 'Last sync: ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    console.error('[SLT] renderDashboard error:', err);
+    renderEmptyDashboard();
+  }
 }
 
 function renderEmptyDashboard() {
-  animateCount(DOM.cardTotal, 0);
-  animateCount(DOM.cardSupport, 0);
-  animateCount(DOM.cardOwn, 0);
-  animateCount(DOM.cardObjects, 0);
-  DOM.supportBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">handshake</span><p>No support tasks for this date</p></div>';
-  DOM.ownBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">person</span><p>No own tasks for this date</p></div>';
-  DOM.taskTableBody.innerHTML = '';
-  DOM.taskCountBadge.textContent = '0';
-  DOM.tableEmpty.hidden = false;
+  try {
+    animateCount(DOM.cardTotal, 0);
+    animateCount(DOM.cardSupport, 0);
+    animateCount(DOM.cardOwn, 0);
+    animateCount(DOM.cardObjects, 0);
+    if (DOM.supportBody) {
+      DOM.supportBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">handshake</span><p>No support tasks for this date</p></div>';
+    }
+    if (DOM.ownBody) {
+      DOM.ownBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">person</span><p>No own tasks for this date</p></div>';
+    }
+    if (DOM.taskTableBody) DOM.taskTableBody.innerHTML = '';
+    if (DOM.taskCountBadge) DOM.taskCountBadge.textContent = '0';
+    if (DOM.tableEmpty) DOM.tableEmpty.hidden = false;
+  } catch (err) {
+    console.error('[SLT] renderEmptyDashboard error:', err);
+  }
 }
 
 // ── Support Panel ─────────────────────────
-
 function renderSupportPanel(supportTasks) {
-  if (!supportTasks.length) {
+  if (!supportTasks || !supportTasks.length) {
     DOM.supportBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">handshake</span><p>No support tasks for this date</p></div>';
     return;
   }
-
-  // Group by teamCode
   var teams = {};
   supportTasks.forEach(function(t) {
     var key = t.teamCode || t.teamLead || 'Unknown';
-    if (!teams[key]) teams[key] = { teamLead: t.teamLead || 'Unknown', teamCode: t.teamCode || '—', unit: t.teamUnit || '—', shift: t.teamShift || '—', tasks: [] };
+    if (!teams[key]) teams[key] = { teamLead: t.teamLead || 'Unknown', teamCode: t.teamCode || '\u2014', unit: t.teamUnit || '\u2014', shift: t.teamShift || '\u2014', tasks: [] };
     teams[key].tasks.push(t);
   });
-
   var html = '';
   Object.values(teams).forEach(function(team) {
     var bd = getBreakdown(team.tasks);
@@ -317,7 +382,6 @@ function renderSupportPanel(supportTasks) {
     var qaTotal = bd.laneLine.qa + bd.lidar.qa;
     var fpPct = total > 0 ? (fpTotal / total * 100) : 0;
     var qaPct = total > 0 ? (qaTotal / total * 100) : 0;
-
     html += '<div class="team-card">'
       + '<div class="team-card-header"><span class="team-card-name">' + escapeHtml(team.teamLead) + '</span><span class="chip chip-support">Support</span></div>'
       + '<div class="team-card-meta">'
@@ -329,7 +393,7 @@ function renderSupportPanel(supportTasks) {
       + '<span class="breakdown-label">Lane Line</span><span class="breakdown-fp">FP: ' + bd.laneLine.fp + '</span><span class="breakdown-qa">QA: ' + bd.laneLine.qa + '</span>'
       + '<span class="breakdown-label">LIDAR</span><span class="breakdown-fp">FP: ' + bd.lidar.fp + '</span><span class="breakdown-qa">QA: ' + bd.lidar.qa + '</span>'
       + '</div>'
-      + '<div class="mini-bar-wrap"><div class="mini-bar-label">FP ' + Math.round(fpPct) + '% — QA ' + Math.round(qaPct) + '%</div>'
+      + '<div class="mini-bar-wrap"><div class="mini-bar-label">FP ' + Math.round(fpPct) + '% \u2014 QA ' + Math.round(qaPct) + '%</div>'
       + '<div class="mini-bar"><div class="mini-bar-fp" style="width:' + fpPct + '%"></div><div class="mini-bar-qa" style="width:' + qaPct + '%"></div></div></div>'
       + buildQueueHtml(queues)
       + '<div class="team-total"><span>Total Tasks</span><span style="color:var(--color-support)">' + total + '</span></div>'
@@ -339,13 +403,11 @@ function renderSupportPanel(supportTasks) {
 }
 
 // ── Own Panel ─────────────────────────────
-
 function renderOwnPanel(ownTasks, totalObjects) {
-  if (!ownTasks.length) {
+  if (!ownTasks || !ownTasks.length) {
     DOM.ownBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">person</span><p>No own tasks for this date</p></div>';
     return;
   }
-
   var bd = getBreakdown(ownTasks);
   var queues = getQueueList(ownTasks);
   var total = ownTasks.length;
@@ -361,18 +423,16 @@ function renderOwnPanel(ownTasks, totalObjects) {
     + '<span class="breakdown-label">Lane Line</span><span class="breakdown-fp">FP: ' + bd.laneLine.fp + '</span><span class="breakdown-qa">QA: ' + bd.laneLine.qa + '</span>'
     + '<span class="breakdown-label">LIDAR</span><span class="breakdown-fp">FP: ' + bd.lidar.fp + '</span><span class="breakdown-qa">QA: ' + bd.lidar.qa + '</span>'
     + '</div>'
-    + '<div class="mini-bar-wrap"><div class="mini-bar-label">FP ' + Math.round(fpPct) + '% — QA ' + Math.round(qaPct) + '%</div>'
+    + '<div class="mini-bar-wrap"><div class="mini-bar-label">FP ' + Math.round(fpPct) + '% \u2014 QA ' + Math.round(qaPct) + '%</div>'
     + '<div class="mini-bar"><div class="mini-bar-fp" style="width:' + fpPct + '%"></div><div class="mini-bar-qa" style="width:' + qaPct + '%"></div></div></div>'
     + buildQueueHtml(queues)
     + '<div class="team-total"><span>Total Tasks</span><span style="color:var(--md-sys-color-secondary)">' + total + '</span></div>'
     + '</div>'
     + '<div class="own-stat-row"><span style="color:var(--md-sys-color-on-surface-low)">Objects Annotated</span><span class="own-stat-value" style="color:var(--color-objects)">' + ownObj.toLocaleString() + '</span></div>';
-
   DOM.ownBody.innerHTML = html;
 }
 
-// ── Helpers: Breakdown & Queues ───────────
-
+// ── Helpers ───────────────────────────────
 function getBreakdown(tasks) {
   var bd = { laneLine: { fp: 0, qa: 0 }, lidar: { fp: 0, qa: 0 } };
   tasks.forEach(function(t) {
@@ -391,7 +451,7 @@ function getQueueList(tasks) {
 }
 
 function buildQueueHtml(queues) {
-  if (!queues.length) return '';
+  if (!queues || !queues.length) return '';
   var maxShow = 3;
   var needToggle = queues.length > maxShow;
   var html = '<div class="queue-list">';
@@ -407,20 +467,17 @@ function buildQueueHtml(queues) {
   return html;
 }
 
-// ── Table: Filter, Sort, Render ───────────
-
+// ── Table ─────────────────────────────────
 function applyFiltersAndRender() {
   var mf = DOM.filterModality.value;
   var pf = DOM.filterPass.value;
   var modf = DOM.filterMode.value;
-
   STATE.filteredTasks = STATE.allTasks.filter(function(t) {
     if (mf !== 'all' && t.modality !== mf) return false;
     if (pf !== 'all' && t.pass !== pf) return false;
     if (modf !== 'all' && t.mode !== modf) return false;
     return true;
   });
-
   sortTasks();
   renderTable();
 }
@@ -429,52 +486,51 @@ function sortTasks() {
   var key = STATE.sortConfig.key;
   var dir = STATE.sortConfig.dir;
   STATE.filteredTasks.sort(function(a, b) {
-    var va, vb;
     if (key === 'objects') {
-      va = parseInt(a.objects) || 0;
-      vb = parseInt(b.objects) || 0;
+      var va = parseInt(a.objects) || 0;
+      var vb = parseInt(b.objects) || 0;
       return dir === 'asc' ? va - vb : vb - va;
     }
-    va = a[key] || '';
-    vb = b[key] || '';
-    var c = va.localeCompare(vb);
+    var va = a[key] || '';
+    var vb = b[key] || '';
+    var c = String(va).localeCompare(String(vb));
     return dir === 'asc' ? c : -c;
   });
 }
 
 function renderTable() {
   var tasks = STATE.filteredTasks;
-  DOM.taskCountBadge.textContent = tasks.length;
-
+  if (DOM.taskCountBadge) DOM.taskCountBadge.textContent = tasks.length;
   if (!tasks.length) {
-    DOM.taskTableBody.innerHTML = '';
-    DOM.tableEmpty.hidden = false;
+    if (DOM.taskTableBody) DOM.taskTableBody.innerHTML = '';
+    if (DOM.tableEmpty) DOM.tableEmpty.hidden = false;
     return;
   }
-  DOM.tableEmpty.hidden = true;
-
+  if (DOM.tableEmpty) DOM.tableEmpty.hidden = true;
   var frag = document.createDocumentFragment();
   tasks.forEach(function(t, i) {
     var tr = document.createElement('tr');
     var modChip = t.modality === 'Lane Line' ? 'chip-lane' : t.modality === 'LIDAR' ? 'chip-lidar' : '';
     var passChip = t.pass === 'FP' ? 'chip-fp' : t.pass === 'QA' ? 'chip-qa' : '';
     var modeChip = t.mode === 'SUPPORT' ? 'chip-support' : 'chip-own';
-    var link = t.taskLink ? '<a href="' + escapeHtml(t.taskLink) + '" target="_blank" rel="noopener" class="task-link" aria-label="Open task"><span class="material-symbols-outlined">open_in_new</span></a>' : '—';
-
+    var link = t.taskLink
+      ? '<a href="' + escapeHtml(t.taskLink) + '" target="_blank" rel="noopener" class="task-link" aria-label="Open task"><span class="material-symbols-outlined">open_in_new</span></a>'
+      : '\u2014';
     tr.innerHTML = '<td style="color:var(--md-sys-color-on-surface-lower);font-family:Roboto Mono,monospace;font-size:0.75rem">' + (i + 1) + '</td>'
       + '<td style="font-family:Roboto Mono,monospace;font-size:0.8125rem">' + escapeHtml(formatTime(t.timestamp)) + '</td>'
-      + '<td><span class="chip ' + modeChip + '">' + escapeHtml(t.mode || '—') + '</span></td>'
-      + '<td><span class="chip ' + modChip + '">' + escapeHtml(t.modality || '—') + '</span></td>'
-      + '<td><span class="queue-text" title="' + escapeHtml(t.queueName || '') + '">' + escapeHtml(t.queueName || '—') + '</span></td>'
-      + '<td><span class="chip ' + passChip + '">' + escapeHtml(t.pass || '—') + '</span></td>'
+      + '<td><span class="chip ' + modeChip + '">' + escapeHtml(t.mode || '\u2014') + '</span></td>'
+      + '<td><span class="chip ' + modChip + '">' + escapeHtml(t.modality || '\u2014') + '</span></td>'
+      + '<td><span class="queue-text" title="' + escapeHtml(t.queueName || '') + '">' + escapeHtml(t.queueName || '\u2014') + '</span></td>'
+      + '<td><span class="chip ' + passChip + '">' + escapeHtml(t.pass || '\u2014') + '</span></td>'
       + '<td style="font-family:Roboto Mono,monospace;font-weight:500;text-align:right">' + (parseInt(t.objects) || 0) + '</td>'
       + '<td style="text-align:center">' + link + '</td>';
     frag.appendChild(tr);
   });
-
   requestAnimationFrame(function() {
-    DOM.taskTableBody.innerHTML = '';
-    DOM.taskTableBody.appendChild(frag);
+    if (DOM.taskTableBody) {
+      DOM.taskTableBody.innerHTML = '';
+      DOM.taskTableBody.appendChild(frag);
+    }
   });
 }
 
@@ -487,7 +543,6 @@ function handleSort(th) {
     STATE.sortConfig.key = key;
     STATE.sortConfig.dir = 'asc';
   }
-  // Update visual arrows
   document.querySelectorAll('.sort-arrow').forEach(function(a) { a.className = 'sort-arrow'; });
   var arrow = th.querySelector('.sort-arrow');
   if (arrow) arrow.classList.add(STATE.sortConfig.dir);
@@ -495,12 +550,10 @@ function handleSort(th) {
   renderTable();
 }
 
-// ── Event Binding ─────────────────────────
-
+// ── Events ────────────────────────────────
 function initEvents() {
   DOM.loginForm.addEventListener('submit', handleLogin);
 
-  // Toggle password
   document.querySelector('.toggle-pass').addEventListener('click', function() {
     var inp = DOM.loginPass;
     var ico = this.querySelector('.material-symbols-outlined');
@@ -510,7 +563,6 @@ function initEvents() {
 
   DOM.logoutBtn.addEventListener('click', handleLogout);
 
-  // Date change → clear cache & reload
   DOM.datePicker.addEventListener('change', function() {
     STATE.currentDate = this.value;
     if (this.value) {
@@ -520,36 +572,50 @@ function initEvents() {
     }
   });
 
-  // Filters (debounced)
   var debouncedFilter = debounce(applyFiltersAndRender, 250);
   DOM.filterModality.addEventListener('change', debouncedFilter);
   DOM.filterPass.addEventListener('change', debouncedFilter);
   DOM.filterMode.addEventListener('change', debouncedFilter);
 
-  // Sortable headers
   document.querySelectorAll('.sortable').forEach(function(th) {
     th.addEventListener('click', function() { handleSort(th); });
   });
 
-  // Enter on name → focus password
   DOM.loginName.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') { e.preventDefault(); DOM.loginPass.focus(); }
   });
 }
 
-// ── Init ──────────────────────────────────
+// ── Global Safety Nets ────────────────────
+// These catch ANY unhandled error and ensure loading is dismissed
+window.addEventListener('error', function() {
+  if (!DOM.loadingOverlay.hidden) {
+    console.error('[SLT] Global error caught — hiding loading');
+    setLoading(false);
+  }
+});
+window.addEventListener('unhandledrejection', function() {
+  if (!DOM.loadingOverlay.hidden) {
+    console.error('[SLT] Unhandled promise rejection — hiding loading');
+    setLoading(false);
+  }
+});
 
+// ── Init ──────────────────────────────────
 function init() {
   cacheDom();
 
-  // Warn if SCRIPT_URL not configured
+  // Check if SCRIPT_URL is configured
   if (CONFIG.SCRIPT_URL.indexOf('YOUR_DEPLOYMENT_ID') !== -1) {
-    DOM.loginError.textContent = 'Setup required: Configure SCRIPT_URL in script.js';
+    DOM.loginError.textContent = 'Setup required: Replace YOUR_DEPLOYMENT_ID in script.js with your Apps Script URL.';
+    DOM.loginError.style.whiteSpace = 'normal';
     DOM.loginBtn.disabled = true;
     console.warn(
-      '%c[Senior Labelers Tracker] CONFIG.SCRIPT_URL is not configured.\nOpen script.js and replace YOUR_DEPLOYMENT_ID with your Apps Script deployment ID.',
+      '%c[Senior Labelers Tracker] CONFIG.SCRIPT_URL is not configured.\n' +
+      'Open script.js and replace YOUR_DEPLOYMENT_ID with your Apps Script deployment ID.',
       'color: #FFB74D; font-size: 14px;'
     );
+    return; // Don't proceed — nothing will work without the URL
   }
 
   initEvents();
