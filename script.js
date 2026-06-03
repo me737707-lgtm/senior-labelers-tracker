@@ -1,6 +1,5 @@
 /* ═══════════════════════════════════════════
    Senior Labelers Tracker — Frontend Logic
-   (Fixed: loading stuck issue)
    ═══════════════════════════════════════════ */
 
 // ── Configuration ─────────────────────────
@@ -11,8 +10,8 @@ var CONFIG = {
   CACHE_TTL: 60 * 1000,
   MAX_LOGIN_ATTEMPTS: 5,
   LOCKOUT_DURATION: 30 * 1000,
-  FETCH_TIMEOUT: 10000,
-  LOADING_SAFETY_TIMEOUT: 12000,
+  FETCH_TIMEOUT: 15000,
+  LOADING_SAFETY_TIMEOUT: 18000,
 };
 
 // ── State ─────────────────────────────────
@@ -43,21 +42,33 @@ function cacheDom() {
   DOM.tableWrapper = document.querySelector('.table-wrapper');
 }
 
-// ── Safe Loading (with auto-dismiss) ──────
+// ── Debug helper — type sltDebug() in browser console ──
+window.sltDebug = function() {
+  return fetchAPI({ action: 'debug' })
+    .then(function(r) {
+      console.log('=== SLT Debug Info ===');
+      console.log('Source:', r.source);
+      console.log('Users:', r.users);
+      console.log('Teams:', r.teams);
+      console.log('Date sheets:', r.dateSheets);
+      console.log('All sheets:', r.allSheetNames);
+      console.log('Sample timestamps:', r.sampleTimestamps);
+      return r;
+    })
+    .catch(function(e) { console.error('Debug failed:', e); });
+};
+
+// ── Safe Loading ──────────────────────────
 function setLoading(show) {
-  // Clear any existing safety timer
   if (STATE._loadingSafetyTimer) {
     clearTimeout(STATE._loadingSafetyTimer);
     STATE._loadingSafetyTimer = null;
   }
-
   DOM.loadingOverlay.hidden = !show;
-
-  // Auto-dismiss safety net: force close after LOADING_SAFETY_TIMEOUT
   if (show) {
     STATE._loadingSafetyTimer = setTimeout(function() {
       if (!DOM.loadingOverlay.hidden) {
-        console.warn('[SLT] Loading safety timeout triggered — forcing hide');
+        console.warn('[SLT] Safety timeout — forcing hide');
         DOM.loadingOverlay.hidden = true;
         STATE._loadingSafetyTimer = null;
       }
@@ -68,7 +79,6 @@ function setLoading(show) {
 // ── Utilities ─────────────────────────────
 function fetchAPI(params) {
   var urlStr = CONFIG.SCRIPT_URL;
-  // Build URL manually to avoid issues with URL constructor
   var sep = urlStr.indexOf('?') === -1 ? '?' : '&';
   var queryParts = [];
   Object.keys(params).forEach(function(k) {
@@ -88,7 +98,10 @@ function fetchAPI(params) {
     return res.text();
   }).then(function(text) {
     try { return JSON.parse(text); }
-    catch (e) { throw new Error('Invalid server response'); }
+    catch (e) {
+      console.error('[SLT] Raw response:', text.substring(0, 200));
+      throw new Error('Invalid server response');
+    }
   }).catch(function(err) {
     clearTimeout(timer);
     if (err.name === 'AbortError') throw new Error('Request timed out');
@@ -98,7 +111,7 @@ function fetchAPI(params) {
 
 function showToast(message, type, duration) {
   type = type || 'info';
-  duration = duration || 4000;
+  duration = duration || 5000;
   var icons = { error: 'error', success: 'check_circle', warning: 'warning', info: 'info' };
   var el = document.createElement('div');
   el.className = 'toast toast-' + type;
@@ -159,7 +172,6 @@ function handleLogin(e) {
     return;
   }
 
-  // Button loading state (NOT the overlay)
   DOM.loginBtn.disabled = true;
   DOM.loginBtn.querySelector('.btn-text').hidden = true;
   DOM.loginBtn.querySelector('.btn-loader').hidden = false;
@@ -171,7 +183,6 @@ function handleLogin(e) {
         STATE.user = { fullName: res.fullName, loginName: name };
         sessionStorage.setItem('slt_user', JSON.stringify(STATE.user));
         showToast('Welcome, ' + res.fullName, 'success');
-        // Use setTimeout to let the DOM paint the button state change first
         setTimeout(function() { showDashboard(); }, 80);
       } else {
         STATE.loginAttempts++;
@@ -185,7 +196,7 @@ function handleLogin(e) {
     })
     .catch(function(err) {
       console.error('[SLT] Auth error:', err);
-      DOM.loginError.textContent = 'Connection error. Check your network and ensure the server is deployed.';
+      DOM.loginError.textContent = 'Connection error. Check your network.';
       showToast('Cannot reach server', 'error');
     })
     .finally(function() {
@@ -200,7 +211,7 @@ function handleLogout() {
   STATE.dates = [];
   STATE.allTasks = [];
   STATE.filteredTasks = [];
-  setLoading(false); // Ensure overlay is off
+  setLoading(false);
   sessionStorage.removeItem('slt_user');
   Object.keys(sessionStorage).forEach(function(k) {
     if (k.indexOf('slt_data_') === 0) sessionStorage.removeItem(k);
@@ -238,6 +249,12 @@ function showDashboard() {
 function loadAvailableDates() {
   fetchAPI({ action: 'availableDates', name: STATE.user.loginName })
     .then(function(res) {
+      if (res.error) {
+        showToast('Server error: ' + res.error, 'error');
+        DOM.datePicker.innerHTML = '<option value="">Error</option>';
+        renderEmptyDashboard();
+        return;
+      }
       if (res.dates && res.dates.length > 0) {
         STATE.dates = res.dates;
         populateDatePicker();
@@ -248,7 +265,7 @@ function loadAvailableDates() {
         STATE.dates = [];
         DOM.datePicker.innerHTML = '<option value="">No data available</option>';
         renderEmptyDashboard();
-        showToast('No task data found for your account.', 'info');
+        showToast('No task data found for your account on any date.', 'info');
       }
     })
     .catch(function(err) {
@@ -256,7 +273,7 @@ function loadAvailableDates() {
       STATE.dates = [];
       DOM.datePicker.innerHTML = '<option value="">Error loading dates</option>';
       renderEmptyDashboard();
-      showToast('Failed to load dates from server', 'error');
+      showToast('Failed to load dates: ' + err.message, 'error');
     });
 }
 
@@ -274,7 +291,6 @@ function populateDatePicker() {
 }
 
 function loadDayData(date) {
-  // Check session cache first (no loading needed)
   var ck = 'slt_data_' + date;
   var ct = 'slt_data_' + date + '_t';
   try {
@@ -283,17 +299,16 @@ function loadDayData(date) {
     if (cached && cacheTime && (Date.now() - parseInt(cacheTime)) < CONFIG.CACHE_TTL) {
       STATE.allTasks = JSON.parse(cached);
       renderDashboard();
-      return; // Skip loading entirely
+      return;
     }
-  } catch (e) { /* ignore cache error */ }
+  } catch (e) { /* ignore */ }
 
-  // Show loading only for network requests
   setLoading(true);
 
   fetchAPI({ action: 'userData', name: STATE.user.loginName, date: date })
     .then(function(res) {
       if (res.error) {
-        showToast(res.error, 'error');
+        showToast('Server: ' + res.error, 'error');
         STATE.allTasks = [];
       } else {
         var support = (res.supportTasks || []);
@@ -308,7 +323,7 @@ function loadDayData(date) {
     })
     .catch(function(err) {
       console.error('[SLT] loadDayData error:', err);
-      showToast('Failed to load task data', 'error');
+      showToast('Failed to load tasks: ' + err.message, 'error');
       STATE.allTasks = [];
       renderEmptyDashboard();
     })
@@ -347,12 +362,8 @@ function renderEmptyDashboard() {
     animateCount(DOM.cardSupport, 0);
     animateCount(DOM.cardOwn, 0);
     animateCount(DOM.cardObjects, 0);
-    if (DOM.supportBody) {
-      DOM.supportBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">handshake</span><p>No support tasks for this date</p></div>';
-    }
-    if (DOM.ownBody) {
-      DOM.ownBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">person</span><p>No own tasks for this date</p></div>';
-    }
+    if (DOM.supportBody) DOM.supportBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">handshake</span><p>No support tasks for this date</p></div>';
+    if (DOM.ownBody) DOM.ownBody.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">person</span><p>No own tasks for this date</p></div>';
     if (DOM.taskTableBody) DOM.taskTableBody.innerHTML = '';
     if (DOM.taskCountBadge) DOM.taskCountBadge.textContent = '0';
     if (DOM.tableEmpty) DOM.tableEmpty.hidden = false;
@@ -553,16 +564,13 @@ function handleSort(th) {
 // ── Events ────────────────────────────────
 function initEvents() {
   DOM.loginForm.addEventListener('submit', handleLogin);
-
   document.querySelector('.toggle-pass').addEventListener('click', function() {
     var inp = DOM.loginPass;
     var ico = this.querySelector('.material-symbols-outlined');
     if (inp.type === 'password') { inp.type = 'text'; ico.textContent = 'visibility'; }
     else { inp.type = 'password'; ico.textContent = 'visibility_off'; }
   });
-
   DOM.logoutBtn.addEventListener('click', handleLogout);
-
   DOM.datePicker.addEventListener('change', function() {
     STATE.currentDate = this.value;
     if (this.value) {
@@ -571,53 +579,35 @@ function initEvents() {
       loadDayData(this.value);
     }
   });
-
   var debouncedFilter = debounce(applyFiltersAndRender, 250);
   DOM.filterModality.addEventListener('change', debouncedFilter);
   DOM.filterPass.addEventListener('change', debouncedFilter);
   DOM.filterMode.addEventListener('change', debouncedFilter);
-
   document.querySelectorAll('.sortable').forEach(function(th) {
     th.addEventListener('click', function() { handleSort(th); });
   });
-
   DOM.loginName.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') { e.preventDefault(); DOM.loginPass.focus(); }
   });
 }
 
 // ── Global Safety Nets ────────────────────
-// These catch ANY unhandled error and ensure loading is dismissed
 window.addEventListener('error', function() {
-  if (!DOM.loadingOverlay.hidden) {
-    console.error('[SLT] Global error caught — hiding loading');
-    setLoading(false);
-  }
+  if (DOM.loadingOverlay && !DOM.loadingOverlay.hidden) setLoading(false);
 });
 window.addEventListener('unhandledrejection', function() {
-  if (!DOM.loadingOverlay.hidden) {
-    console.error('[SLT] Unhandled promise rejection — hiding loading');
-    setLoading(false);
-  }
+  if (DOM.loadingOverlay && !DOM.loadingOverlay.hidden) setLoading(false);
 });
 
 // ── Init ──────────────────────────────────
 function init() {
   cacheDom();
-
-  // Check if SCRIPT_URL is configured
   if (CONFIG.SCRIPT_URL.indexOf('YOUR_DEPLOYMENT_ID') !== -1) {
-    DOM.loginError.textContent = 'Setup required: Replace YOUR_DEPLOYMENT_ID in script.js with your Apps Script URL.';
+    DOM.loginError.textContent = 'Setup required: Replace YOUR_DEPLOYMENT_ID in script.js.';
     DOM.loginError.style.whiteSpace = 'normal';
     DOM.loginBtn.disabled = true;
-    console.warn(
-      '%c[Senior Labelers Tracker] CONFIG.SCRIPT_URL is not configured.\n' +
-      'Open script.js and replace YOUR_DEPLOYMENT_ID with your Apps Script deployment ID.',
-      'color: #FFB74D; font-size: 14px;'
-    );
-    return; // Don't proceed — nothing will work without the URL
+    return;
   }
-
   initEvents();
   checkSession();
 }
