@@ -50,6 +50,9 @@
     --dur-slow:   400ms;
 }
 
+/* ═══ FIX: hidden attribute MUST override any display rule ═══ */
+[hidden] { display: none !important; }
+
 html { font-size: 16px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
 body {
