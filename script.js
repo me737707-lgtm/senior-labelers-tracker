@@ -249,7 +249,18 @@ function showDashboard() {
 function loadAvailableDates() {
   fetchAPI({ action: 'availableDates', name: STATE.user.loginName })
     .then(function(res) {
-      if (res.error) {
+            if (res.error) {
+        if (res.error === 'INDEX_MISSING') {
+          // Auto-trigger index rebuild
+          showToast('Building date index... please wait.', 'warning', 6000);
+          fetchAPI({ action: 'rebuildindex' }).then(function() {
+            showToast('Index built! Loading dates...', 'success');
+            loadAvailableDates();
+          }).catch(function(e2) {
+            showToast('Index rebuild failed: ' + e2.message, 'error');
+          });
+          return;
+        }
         showToast('Server error: ' + res.error, 'error');
         DOM.datePicker.innerHTML = '<option value="">Error</option>';
         renderEmptyDashboard();
